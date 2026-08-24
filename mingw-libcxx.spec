@@ -1,17 +1,24 @@
 # The LLVM C++ runtime stack -- libunwind, libc++abi and libc++ -- for the
-# aarch64-w64-mingw32 (Windows on ARM64) target.
+# aarch64-w64-mingw32 (Windows on ARM64) target, plus libunwind alone for the
+# win32 and win64 targets.
 #
-# Only the LLVM based target has these runtimes; the GCC targets use libstdc++
-# and the GCC unwinder out of mingw-gcc, so every other target is off here.
+# ucrtarm64 has no libstdc++ or GCC unwinder at all.  win32 and win64 have
+# them, but their clang supplement drivers (mingw32-clang, mingw64-clang)
+# select -unwindlib=libunwind, which the drivers place on every link, so
+# those targets need libunwind even for C.  Their C++ stack (libc++abi,
+# libc++) is not built yet: nothing consumes it, and the GCC toolchain with
+# libstdc++ remains those targets' default.
 #
 # Note: LLVM no longer publishes per-project source tarballs, and the runtimes
 # are configured through runtimes/CMakeLists.txt (LLVM_ENABLE_RUNTIMES), which
 # reaches across the whole tree, so the complete llvm-project monorepo tarball
 # is Source0 and only runtimes/ is configured and built.
-%global mingw_build_win32     0
-%global mingw_build_win64     0
+%global mingw_build_win32     1
+%global mingw_build_win64     1
 %global mingw_build_ucrt64    0
 %global mingw_build_ucrtarm64 1
+%global mingw_toolchain_win32 clang
+%global mingw_toolchain_win64 clang
 
 # Nils the brp strip passes for the ucrtarm64 target (binutils strip corrupts
 # AArch64 PE archives); %%check verifies the ar symbol indexes survived.
@@ -19,7 +26,7 @@
 
 Name:           mingw-libcxx
 Version:        22.1.8
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        MinGW cross-compiled LLVM C++ runtime
 
 License:        Apache-2.0 WITH LLVM-exception OR NCSA
@@ -36,6 +43,22 @@ BuildRequires:  ucrtarm64-headers
 BuildRequires:  ucrtarm64-crt
 BuildRequires:  ucrtarm64-clang
 BuildRequires:  ucrtarm64-compiler-rt
+# The win32/win64 clang columns dispatch to the supplement drivers only from
+# 152-1.9 on; older macros would silently build against libgcc.
+BuildRequires:  mingw32-filesystem >= 152-1.9
+BuildRequires:  mingw32-headers
+BuildRequires:  mingw32-crt
+BuildRequires:  mingw32-clang
+BuildRequires:  mingw32-compiler-rt
+BuildRequires:  mingw32-binutils
+BuildRequires:  mingw64-filesystem >= 152-1.9
+BuildRequires:  mingw64-headers
+BuildRequires:  mingw64-crt
+BuildRequires:  mingw64-clang
+BuildRequires:  mingw64-compiler-rt
+BuildRequires:  mingw64-binutils
+BuildRequires:  clang
+BuildRequires:  lld
 # For %%check, which inspects the archives and the linked PE images.
 BuildRequires:  llvm
 
@@ -120,6 +143,50 @@ libc++abi is merged into libc++.a, but a -static link still resolves
 -unwindlib=libunwind against libunwind.a, hence the dependency on
 ucrtarm64-libunwind-static.
 
+
+%package -n mingw32-libunwind
+Summary:        LLVM unwinder for the win32 target
+Requires:       mingw32-crt
+
+%description -n mingw32-libunwind
+The LLVM unwinder for the i686-w64-mingw32 target.
+
+This is what -unwindlib=libunwind links against when the mingw32-clang
+supplement drivers are used in place of the GCC toolchain and its unwinder.
+The drivers place it on every link, so it is needed even for C.
+
+
+%package -n mingw32-libunwind-static
+Summary:        Static version of the LLVM unwinder for the win32 target
+Requires:       mingw32-libunwind = %{version}-%{release}
+
+%description -n mingw32-libunwind-static
+Static version of the LLVM unwinder for the i686-w64-mingw32 target.
+
+This is what -unwindlib=libunwind resolves to in a -static link.
+
+
+%package -n mingw64-libunwind
+Summary:        LLVM unwinder for the win64 target
+Requires:       mingw64-crt
+
+%description -n mingw64-libunwind
+The LLVM unwinder for the x86_64-w64-mingw32 target.
+
+This is what -unwindlib=libunwind links against when the mingw64-clang
+supplement drivers are used in place of the GCC toolchain and its unwinder.
+The drivers place it on every link, so it is needed even for C.
+
+
+%package -n mingw64-libunwind-static
+Summary:        Static version of the LLVM unwinder for the win64 target
+Requires:       mingw64-libunwind = %{version}-%{release}
+
+%description -n mingw64-libunwind-static
+Static version of the LLVM unwinder for the x86_64-w64-mingw32 target.
+
+This is what -unwindlib=libunwind resolves to in a -static link.
+
 # Required with %%mingw_package_header for stripped DLLs plus debuginfo.
 %{?mingw_debug_package}
 
@@ -178,6 +245,25 @@ pushd runtimes
         -DLIBCXX_HAS_MUSL_LIB=OFF \\
         -DLIBCXX_HAS_PTHREAD_LIB=OFF \\
         -DLIBCXX_HAS_RT_LIB=OFF"
+    # win32/win64 build libunwind alone: the supplement drivers put
+    # -unwindlib=libunwind on every link, C included, while C++ stays with
+    # the GCC toolchain and libstdc++ on these targets for now.  The same
+    # STATIC_LIBRARY probe rule and -l probe vacuity apply.
+    WIN_LIBUNWIND_ARGS="\\
+        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \\
+        -DLLVM_ENABLE_RUNTIMES=libunwind \\
+        -DLIBUNWIND_USE_COMPILER_RT=ON \\
+        -DLIBUNWIND_ENABLE_SHARED=ON \\
+        -DLIBUNWIND_ENABLE_STATIC=ON \\
+        -DLIBUNWIND_HAS_BSD_LIB=OFF \\
+        -DLIBUNWIND_HAS_C_LIB=OFF \\
+        -DLIBUNWIND_HAS_DL_LIB=OFF \\
+        -DLIBUNWIND_HAS_GCC_LIB=OFF \\
+        -DLIBUNWIND_HAS_GCC_S_LIB=OFF \\
+        -DLIBUNWIND_HAS_PTHREAD_LIB=OFF \\
+        -DLIBUNWIND_HAS_ROOT_LIB=OFF"
+    MINGW32_CMAKE_ARGS="$WIN_LIBUNWIND_ARGS"
+    MINGW64_CMAKE_ARGS="$WIN_LIBUNWIND_ARGS"
     %mingw_cmake -G Ninja
     %mingw_ninja
 popd
@@ -189,9 +275,11 @@ pushd runtimes
 popd
 
 # libunwind ships the Mach-O compact unwind encoding header unconditionally.
-# It describes a format this target cannot produce or consume, so it is not
+# It describes a format these targets cannot produce or consume, so it is not
 # shipped rather than being packaged into a Windows sysroot.
 rm -rf %{buildroot}%{ucrtarm64_includedir}/mach-o
+rm -rf %{buildroot}%{mingw32_includedir}/mach-o
+rm -rf %{buildroot}%{mingw64_includedir}/mach-o
 
 
 %check
@@ -311,6 +399,51 @@ echo "check: std::thread uses the Win32 thread API"
 
 # 5. Nothing Mach-O may be shipped into a Windows sysroot.
 test ! -e %{buildroot}%{ucrtarm64_includedir}/mach-o
+test ! -e %{buildroot}%{mingw32_includedir}/mach-o
+test ! -e %{buildroot}%{mingw64_includedir}/mach-o
+
+# 6. The win32/win64 libunwind: archives indexed, the DLL in the right PE
+#    format, and a real C link.  The supplement drivers emit
+#    -unwindlib=libunwind on every link, so even int main(){} resolves
+#    against the buildroot copy through -L; the negative control repeats the
+#    link without -L, where the sysroot copy does not exist yet, proving the
+#    -L (and the driver's -lunwind behind it) is what the positive satisfied.
+for t in i686-w64-mingw32 x86_64-w64-mingw32 ; do
+  case $t in
+    i686-*)
+      wlibdir=%{buildroot}%{mingw32_libdir}
+      wbindir=%{buildroot}%{mingw32_bindir}
+      objformat=coff-i386
+      ;;
+    x86_64-*)
+      wlibdir=%{buildroot}%{mingw64_libdir}
+      wbindir=%{buildroot}%{mingw64_bindir}
+      objformat=coff-x86-64
+      ;;
+  esac
+
+  for a in "$wlibdir"/libunwind.a "$wlibdir"/libunwind.dll.a ; do
+    test -f "$a"
+    header=$(od -A n -t x1 -N 10 "$a" | tr -d ' \n')
+    echo "$t: archive $a header bytes: $header members: $(llvm-ar t "$a" | wc -l)"
+    test "$header" = "213c617263683e0a2f20"
+    llvm-nm --print-armap "$a" | grep -q ' in ' || \
+        { echo "$t: ar symbol index of $a does not resolve" ; exit 1 ; }
+  done
+
+  llvm-objdump -f "$wbindir/libunwind.dll"
+  llvm-objdump -f "$wbindir/libunwind.dll" | grep -q "$objformat"
+
+  printf 'int main(void) { return 0; }\n' > _c_probe.c
+  $t-clang -L"$wlibdir" -o _c_probe-$t.exe _c_probe.c
+  llvm-objdump -f _c_probe-$t.exe | grep -q "$objformat"
+  if $t-clang -o _c_negative-$t.exe _c_probe.c 2>_c_negative.log ; then
+    echo "$t: linked without -L: the C link above proves nothing about libunwind"
+    exit 1
+  fi
+  echo "$t: negative control failed as expected:"
+  cat _c_negative.log
+done
 
 
 %files -n ucrtarm64-libunwind
@@ -357,8 +490,46 @@ test ! -e %{buildroot}%{ucrtarm64_includedir}/mach-o
 %{ucrtarm64_libdir}/libc++.a
 %{ucrtarm64_libdir}/libc++experimental.a
 
+%files -n mingw32-libunwind
+%license libunwind/LICENSE.TXT
+%{mingw32_bindir}/libunwind.dll
+%{mingw32_libdir}/libunwind.dll.a
+%{mingw32_includedir}/__libunwind_config.h
+%{mingw32_includedir}/libunwind.h
+%{mingw32_includedir}/libunwind.modulemap
+%{mingw32_includedir}/unwind.h
+%{mingw32_includedir}/unwind_arm_ehabi.h
+%{mingw32_includedir}/unwind_itanium.h
+
+%files -n mingw32-libunwind-static
+%license libunwind/LICENSE.TXT
+%{mingw32_libdir}/libunwind.a
+
+%files -n mingw64-libunwind
+%license libunwind/LICENSE.TXT
+%{mingw64_bindir}/libunwind.dll
+%{mingw64_libdir}/libunwind.dll.a
+%{mingw64_includedir}/__libunwind_config.h
+%{mingw64_includedir}/libunwind.h
+%{mingw64_includedir}/libunwind.modulemap
+%{mingw64_includedir}/unwind.h
+%{mingw64_includedir}/unwind_arm_ehabi.h
+%{mingw64_includedir}/unwind_itanium.h
+
+%files -n mingw64-libunwind-static
+%license libunwind/LICENSE.TXT
+%{mingw64_libdir}/libunwind.a
+
 
 %changelog
+* Mon Aug 24 2026 Erik Berg <fedora@slipsprogrammor.no> - 22.1.8-2
+- Add libunwind for the win32 and win64 targets: the mingw32-clang and
+  mingw64-clang supplement drivers emit -unwindlib=libunwind on every link,
+  C included.  Their C++ stack (libc++abi, libc++) stays unbuilt; those
+  targets keep libstdc++ under the default GCC toolchain
+- The x86 checks link a C program through the supplement drivers against
+  the buildroot libunwind, with a no-dash-L negative control
+
 * Thu Aug 06 2026 Erik Berg <fedora@slipsprogrammor.no> - 22.1.8-1
 - Initial package: the LLVM C++ runtime stack (libunwind, libc++abi, libc++)
   for the aarch64-w64-mingw32 (ucrtarm64) target
